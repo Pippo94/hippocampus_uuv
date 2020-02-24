@@ -3,6 +3,7 @@ import rospy
 from pyquaternion import Quaternion
 import numpy as np
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
+from transformations import unit_vector
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import AttitudeTarget
 
@@ -20,16 +21,14 @@ class Boat:
     qx_180 = Quaternion(axis=[1, 0, 0], angle=np.pi)
     qz_90p = Quaternion(axis=[0, 0, 1], angle=np.pi / 2)
     q_rot = qz_90p*qx_180
-    q = quaternion_from_euler(np.pi, 0, np.pi/2)
-    print(q_rot)
-    print(q)
 
     def __init__(self):
         self.position = np.array([0, 0, 0])
         self.orientation_quat = Quaternion()
         self.orientation_euler = euler_from_quaternion(self.orientation_quat.elements)
-        self._pub = rospy.Publisher('/mavros/setpoint_raw/attitude', AttitudeTarget, queue_size=10)
+        self._pub = rospy.Publisher('/mavros/setpoint_raw/attitude', AttitudeTarget, queue_size=1)
         self._sub = rospy.Subscriber('mavros/local_position/pose', PoseStamped, self.callback)
+        self.is_done = False
 
     def callback(self, data):
         #ENU_local_ground into NED
@@ -37,6 +36,67 @@ class Boat:
         self.orientation_quat = self.gen_quat_ned(Quaternion(w=data.pose.orientation.w, x=data.pose.orientation.x, y=data.pose.orientation.y, z=data.pose.orientation.z))
         self.orientation_euler = euler_from_quaternion(np.array([self.orientation_quat.x, self.orientation_quat.y, self.orientation_quat.z, self.orientation_quat.w]))
         # print("ENU_ROS:", euler_from_quaternion(np.array([data.pose.orientation.x, data.pose.orientation.y, data.pose.orientation.z, data.pose.orientation.w])))
+
+    def set_waypoint(self, waypoint):
+        # expect a numpy array [x, y, z]
+        self.is_done = False
+        set_target = AttitudeTarget()
+        rate = rospy.Rate(25)
+
+        while not self.is_done:
+            uuv_orientation = unit_vector(self.orientation_quat.rotate(np.array([10, 0, 0])))
+            target = unit_vector(10*np.subtract(waypoint, self.position))
+            quat_axis = unit_vector(np.cross(uuv_orientation, target))
+            quat_angle = np.arccos(np.dot(uuv_orientation, target))
+            quat = self.gen_quat_enu(self.orientation_quat)
+
+            if np.linalg.norm(self.position-waypoint) <= 0.1:
+                set_target.thrust = 0
+                self.is_done = True
+                print("Waypoint set!")
+            else:
+                if not ((np.linalg.norm(quat_axis) <= 0.01) or (quat_angle == 0)):
+                    quat = self.gen_quat_enu(Quaternion(axis=quat_axis, angle=2 * quat_angle))
+                    set_target.thrust = 0.4
+
+            set_target.orientation.x = quat.x
+            set_target.orientation.y = quat.y
+            set_target.orientation.z = quat.z
+            set_target.orientation.w = quat.w
+            self._pub.publish(set_target)
+            rate.sleep()
+        self.is_done = False
+
+    def set_attitude(self, euler_angles):
+        # expects numpy array euler_angles = [roll, pitch, yaw] in radiant
+        self.is_done = False
+        rate = rospy.Rate(25)
+
+        q_roll = Quaternion(axis=[1, 0, 0], angle=euler_angles[0])  # roll
+        q_pitch = Quaternion(axis=[0, 1, 0], angle=euler_angles[1])  # pitch
+        q_yaw = Quaternion(axis=[0, 0, 1], angle=euler_angles[2])  # yaw
+
+        quat = self.orientation_quat
+        quat_euler = self.gen_quat_enu(q_yaw*q_pitch*q_roll)
+
+        set_attitude = AttitudeTarget()
+
+        while not self.is_done:
+            print("request", quat_euler.elements, "ist", self.orientation_quat.elements)
+            print("norm", np.linalg.norm(quat_euler.elements-self.orientation_quat.elements))
+            if np.linalg.norm(self.orientation_quat.elements-self.gen_quat_ned(quat_euler).elements) <= 0.01:
+                print("Attitude set!")
+                self.is_done = True
+            else:
+                quat = quat_euler
+
+            set_attitude.orientation.x = quat.x
+            set_attitude.orientation.y = quat.y
+            set_attitude.orientation.z = quat.z
+            set_attitude.orientation.w = quat.w
+            self._pub.publish(set_attitude)
+            rate.sleep()
+        self.is_done = False
 
     def gen_quat_ned(self, quaternion):
 
@@ -56,61 +116,20 @@ class Boat:
         return quaternion
 
 
-def normalize(v):
-    norm = np.linalg.norm(v)
-    if norm == 0:
-        return v
-
-    return v / norm
-
-
 def main():
     rospy.init_node('attitude_set')
     uuv = Boat()
-    set = AttitudeTarget()
 
     roll = 0
-    pitch = 0
+    pitch = 0.3
     yaw = 0
 
-    waypoint = np.array([3, 3, 0])
+    #waypoint = np.array([3, 3, 1])
 
-    q_roll = Quaternion(axis=[1, 0, 0], angle=roll)
-    q_pitch = Quaternion(axis=[0, 1, 0], angle=pitch)
-    q_yaw = Quaternion(axis=[0, 0, 1], angle=yaw)
+    rate = rospy.Rate(0.5)
 
-    quat_euler = uuv.gen_quat_enu(q_yaw*q_pitch*q_roll)
-
-    rate = rospy.Rate(20)
-
-
-    while not rospy.is_shutdown():
-        # waypoint
-        uuv_orientation = normalize(uuv.orientation_quat.rotate(np.array([10, 0, 0])))
-        target = normalize(np.subtract(waypoint, uuv.position))
-
-        quat_axis = normalize(np.cross(uuv_orientation, target))
-        quat_angle = np.arccos(np.dot(uuv_orientation, target))
-        print("orientation:", uuv_orientation)
-        if not((np.linalg.norm(quat_axis) <= 0.01) or (quat_angle == 0)):
-            quat = uuv.gen_quat_enu(Quaternion(axis=quat_axis, angle=2*quat_angle))
-        else:
-            rot_target = uuv.gen_quat_enu(uuv.orientation_quat)
-            quat = rot_target
-
-        set.orientation.x = quat.x
-        set.orientation.y = quat.y
-        set.orientation.z = quat.z
-        set.orientation.w = quat.w
-        #set.thrust =
-
-        if np.linalg.norm(uuv.position-waypoint) <= 0.5:
-            set.thrust = 0
-        else:
-            set.thrust = 0.4
-
-
-        uuv._pub.publish(set)
+    while not uuv.is_done:
+        uuv.set_attitude(np.array([roll, pitch, yaw]))
         rate.sleep()
 
     rospy.spin()
