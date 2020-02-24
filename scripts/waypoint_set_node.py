@@ -47,7 +47,9 @@ class Boat:
             uuv_orientation = unit_vector(self.orientation_quat.rotate(np.array([10, 0, 0])))
             target = unit_vector(10*np.subtract(waypoint, self.position))
             quat_axis = unit_vector(np.cross(uuv_orientation, target))
+            #winkel pi abfrage!!
             quat_angle = np.arccos(np.dot(uuv_orientation, target))
+            print(quat_angle)
             quat = self.gen_quat_enu(self.orientation_quat)
 
             if np.linalg.norm(self.position-waypoint) <= 0.1:
@@ -71,7 +73,7 @@ class Boat:
         # expects numpy array euler_angles = [roll, pitch, yaw] in radiant
         self.is_done = False
         rate = rospy.Rate(25)
-
+        print("rein")
         q_roll = Quaternion(axis=[1, 0, 0], angle=euler_angles[0])  # roll
         q_pitch = Quaternion(axis=[0, 1, 0], angle=euler_angles[1])  # pitch
         q_yaw = Quaternion(axis=[0, 0, 1], angle=euler_angles[2])  # yaw
@@ -82,8 +84,9 @@ class Boat:
         set_attitude = AttitudeTarget()
 
         while not self.is_done:
-            print("request", quat_euler.elements, "ist", self.orientation_quat.elements)
-            print("norm", np.linalg.norm(quat_euler.elements-self.orientation_quat.elements))
+            print("request", self.gen_quat_ned(quat_euler).elements, "ist", self.orientation_quat.elements)
+            print("norm", np.linalg.norm(self.gen_quat_ned(quat_euler).elements-self.orientation_quat.elements))
+
             if np.linalg.norm(self.orientation_quat.elements-self.gen_quat_ned(quat_euler).elements) <= 0.01:
                 print("Attitude set!")
                 self.is_done = True
@@ -120,16 +123,19 @@ def main():
     rospy.init_node('attitude_set')
     uuv = Boat()
 
-    roll = 0
-    pitch = 0.3
-    yaw = 0
+    #roll = 0.3
+    #pitch = 0.3
+    #yaw = 0.5
 
-    #waypoint = np.array([3, 3, 1])
+    waypoint = np.array([3, 3, 1])
 
-    rate = rospy.Rate(0.5)
+    rate = rospy.Rate(0.1)
 
     while not uuv.is_done:
-        uuv.set_attitude(np.array([roll, pitch, yaw]))
+        #uuv.set_attitude(np.array([roll, pitch, yaw]))
+        uuv.set_waypoint(waypoint)
+        print("raus")
+
         rate.sleep()
 
     rospy.spin()
